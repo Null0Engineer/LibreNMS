@@ -1,36 +1,46 @@
 # ifstatus_single
 
-LibreNMS service check for monitoring a **single interface independently** by SNMPv3.
+A LibreNMS service check for monitoring a **single interface independently** with SNMPv3.
 
-Each LibreNMS service instance represents one interface `ifIndex`. If one port fails, only that service goes critical.
+Each LibreNMS service instance represents one interface `ifIndex`. If one interface fails, only that service changes state.
+
+## What it does
+
+`check_ifstatus_single` checks the operational state of one interface and can enrich the service output with:
+
+- interface name and description
+- RX/TX optical power
+- transceiver type, vendor, and serial number
+- LibreNMS port notes
+
+The service returns:
+
+| Code | State | Meaning |
+| ---: | --- | --- |
+| 0 | OK | Interface is operationally up |
+| 2 | CRITICAL | Interface is not operationally up |
+| 3 | UNKNOWN | Invalid arguments, SNMP failure, database failure, or device mapping failure |
 
 ## Files
 
-- `check_ifstatus_single` — authoritative service check currently used on the LibreNMS server
-- `ifstatus_single.conf.example` — reference only; the deployed script does not require it
-- `alert-rule.md` — preserved live alert-rule behavior
-- `alert-template.blade.php` — preserved LibreNMS alert template
-- `device-group.md` — preserved live Front End ISP Switches dynamic-device-group definition
+- `check_ifstatus_single` — service check script
+- `ifstatus_single.conf.example` — example SNMPv3 configuration
+- `alert-rule.md` — example LibreNMS alert rule
+- `alert-template.blade.php` — example LibreNMS alert template
+- `device-group.md` — example dynamic device group
 
-## Deployment
+## Installation
 
-This repository is for storage, documentation, and version control only. It is **not** intended to be cloned onto the LibreNMS server.
-
-Copy the script to:
-
-```text
-/usr/lib/nagios/plugins/check_ifstatus_single
-```
-
-Then:
+Copy the check script to the Nagios/LibreNMS plugin directory:
 
 ```bash
+sudo cp check_ifstatus_single /usr/lib/nagios/plugins/check_ifstatus_single
 sudo chmod 755 /usr/lib/nagios/plugins/check_ifstatus_single
 ```
 
-## Service creation
+## LibreNMS service setup
 
-When adding the service in LibreNMS, use:
+Create one service for each interface you want to monitor:
 
 ```text
 Name: <friendly service name>
@@ -39,9 +49,9 @@ Remote Host: <device management IP>
 Parameters: <ifIndex>
 ```
 
-### Important: Parameters uses ifIndex, not the physical port number
+### Use the SNMP ifIndex
 
-The value in **Parameters** must be the interface's SNMP/LibreNMS **ifIndex**.
+The value in **Parameters** is the interface's SNMP/LibreNMS `ifIndex`, not the physical port number.
 
 For example:
 
@@ -49,25 +59,15 @@ For example:
 Parameters: 21
 ```
 
-does **not** mean "switch port 21."
-
-It means:
+means:
 
 ```text
 ifIndex = 21
 ```
 
-The physical/logical interface associated with that ifIndex might be something completely different, such as:
+It does not necessarily mean switch port 21.
 
-```text
-Twe1/0/16
-Gi1/0/48
-Ethernet1/3
-```
-
-Always look up the interface's actual ifIndex before creating the service.
-
-You can verify it in LibreNMS by checking the port details, or directly in the database:
+You can look up interface indexes in LibreNMS or query the database:
 
 ```sql
 SELECT
@@ -80,25 +80,30 @@ WHERE device_id = <DEVICE_ID>
 ORDER BY ifIndex;
 ```
 
-You can also verify it by SNMP:
+You can also query the device directly:
 
 ```bash
 snmpwalk -v3 -l authPriv -u USER -a SHA -A AUTH_PASSWORD -x AES -X PRIV_PASSWORD \
   <HOST> 1.3.6.1.2.1.31.1.1.1.1
 ```
 
-This returns the mapping between ifIndex values and interface names.
+## Usage
 
-## Supported invocation formats
-
-### Default credentials
+Using the built-in credential defaults:
 
 ```bash
 check_ifstatus_single HOST IFINDEX
 check_ifstatus_single -H HOST IFINDEX
 ```
 
-The script uses its built-in defaults:
+Using explicit credentials:
+
+```bash
+check_ifstatus_single HOST USER AUTH_PASSWORD PRIV_PASSWORD IFINDEX
+check_ifstatus_single -H HOST USER AUTH_PASSWORD PRIV_PASSWORD IFINDEX
+```
+
+The script currently contains placeholder defaults:
 
 ```bash
 DEFAULT_USER="librenms"
@@ -106,26 +111,17 @@ DEFAULT_AUTH="CHANGEME"
 DEFAULT_PRIV="CHANGEME"
 ```
 
-Replace the placeholder authentication and privacy passwords in the deployed copy with the correct local credentials. Do not commit real credentials to GitHub.
-
-### Explicit / legacy credentials
-
-```bash
-check_ifstatus_single HOST USER AUTH_PASSWORD PRIV_PASSWORD IFINDEX
-check_ifstatus_single -H HOST USER AUTH_PASSWORD PRIV_PASSWORD IFINDEX
-```
-
-This preserves compatibility with existing LibreNMS service definitions that pass credentials explicitly.
+Replace these locally if you use the default-credential form. Do not commit real credentials.
 
 ## SNMP behavior
 
-The script uses SNMPv3:
+The check uses SNMPv3 with:
 
-- Security level: `authPriv`
-- Authentication protocol: SHA
-- Privacy protocol: AES
-- Timeout: 5 seconds
-- Retries: 1
+- security level: `authPriv`
+- authentication: SHA
+- privacy: AES
+- timeout: 5 seconds
+- retries: 1
 
 It queries:
 
@@ -133,21 +129,15 @@ It queries:
 - `1.3.6.1.2.1.31.1.1.1.18.<ifIndex>` — ifAlias
 - `1.3.6.1.2.1.2.2.1.8.<ifIndex>` — ifOperStatus
 
-If the interface state is `up`, the service returns OK.
+## LibreNMS database access
 
-Any other valid operational state returns CRITICAL.
-
-A failed SNMP query returns UNKNOWN.
-
-## LibreNMS database connection
-
-The script reads all database connection details from:
+The script reads database settings from:
 
 ```text
 /opt/librenms/.env
 ```
 
-The following variables are used:
+Variables used:
 
 ```text
 DB_HOST
@@ -157,7 +147,7 @@ DB_USERNAME
 DB_PASSWORD
 ```
 
-Defaults are applied only where appropriate:
+Defaults:
 
 ```text
 DB_PORT=3306
@@ -167,13 +157,9 @@ DB_USERNAME=librenms
 
 `DB_HOST` and `DB_PASSWORD` must be present.
 
-This supports installations where MariaDB is remote from the LibreNMS poller/web server.
+## Device and port mapping
 
-The LibreNMS server must have TCP connectivity to the configured database host and port.
-
-## Device mapping
-
-The checked host is mapped to a LibreNMS device through the services table:
+The service IP is mapped back to a LibreNMS device through the `services` table:
 
 ```sql
 SELECT device_id
@@ -183,7 +169,7 @@ WHERE service_ip = '<HOST>'
 LIMIT 1;
 ```
 
-The interface is then mapped using:
+The interface is then resolved using:
 
 ```text
 device_id + ifIndex -> port_id
@@ -191,104 +177,50 @@ device_id + ifIndex -> port_id
 
 ## Optical power
 
-### Cisco and other platforms
+For most platforms, optical values are read from LibreNMS `dbm` sensors associated with the interface.
 
-LibreNMS optical sensors are read from the `sensors` table using:
-
-```text
-sensor_class = dbm
-```
-
-and descriptions matching:
-
-```text
-<ifName> Receive Power
-<ifName> Transmit Power
-```
-
-### Ciena SAOS
-
-When:
-
-```text
-devices.os = ciena-saos
-```
-
-the script uses `sensor_class=power` with:
+For Ciena SAOS devices, the script reads `power` sensors named:
 
 ```text
 rx-<ifIndex>
 tx-<ifIndex>
 ```
 
-LibreNMS stores those values as watts, so the script converts them to dBm:
-
-```text
-dBm = 10 * log10(watts * 1000)
-```
+LibreNMS stores those values as watts, so they are converted to dBm.
 
 ## Transceiver inventory
 
-### Ciena SAOS
+For Ciena SAOS, transceiver information is read from the LibreNMS `transceivers` table.
 
-Transceiver details are read from the `transceivers` table using `device_id` and `port_id`.
-
-Fields used:
-
-- type/model
-- vendor
-- serial
-
-### Other platforms
-
-Transceiver information is read from `entPhysical` using:
-
-```text
-device_id
-entPhysicalName = ifName
-```
-
-Fields used:
-
-- entPhysicalModelName
-- entPhysicalMfgName
-- entPhysicalSerialNum
+For other supported platforms, the script reads transceiver details from `entPhysical`.
 
 ## Port notes
 
-Per-port notes are read from `devices_attribs` using:
+LibreNMS port notes are read from `devices_attribs` using:
 
 ```text
-attrib_type = port_id_notes:<port_id>
+port_id_notes:<port_id>
 ```
 
-Embedded newlines are flattened before being included in the service output.
-
-## Exit states
-
-| Code | State | Meaning |
-| ---: | --- | --- |
-| 0 | OK | Interface operational state is up |
-| 2 | CRITICAL | Interface operational state is not up |
-| 3 | UNKNOWN | Invalid arguments, SNMP failure, DB settings failure, or device mapping failure |
+Embedded newlines are flattened before they are added to the service output.
 
 ## Example output
 
 Healthy interface:
 
 ```text
-OK - Twe1/0/16 RX:-3.10 TX:-4.40 DESC:Hanley Desk TYPE:SFP-10G-SR VENDOR:Cisco SERIAL:ABC123 NOTES:Desk uplink
+OK - Twe1/0/16 RX:-3.10 TX:-4.40 DESC:Server Uplink TYPE:SFP-10G-SR VENDOR:Cisco SERIAL:ABC123 NOTES:Primary uplink
 ```
 
 Failed interface:
 
 ```text
-CRITICAL - Twe1/0/16 DOWN RX:-40.00 TX:-4.40 DESC:Hanley Desk TYPE:SFP-10G-SR VENDOR:Cisco SERIAL:ABC123 NOTES:Desk uplink
+CRITICAL - Twe1/0/16 DOWN RX:-40.00 TX:-4.40 DESC:Server Uplink TYPE:SFP-10G-SR VENDOR:Cisco SERIAL:ABC123 NOTES:Primary uplink
 ```
 
-## LibreNMS alert rule
+## Alerting
 
-The live alert condition is:
+The included example rule alerts when the service is not OK while the parent device itself is still reachable:
 
 ```text
 services.service_status != 0
@@ -296,110 +228,34 @@ AND
 macros.device_up = 1
 ```
 
-The device-up condition is intentional: it keeps the interface/service alert from becoming the primary alert when the whole monitored device is down.
+This helps separate an individual interface failure from a complete device outage.
 
-The live rule is named:
+See:
 
-```text
-ISP - Service up/down - Front End Switches
-```
+- `alert-rule.md`
+- `alert-template.blade.php`
+- `device-group.md`
 
-and uses the alert template:
-
-```text
-Cisco - Internet Port status
-```
-
-The live notification cadence is configured for an immediate alert and hourly repeats while the outage remains active:
-
-```text
-steps 1-∞
-start 0s
-step 3600s
-```
-
-See `alert-rule.md` and `alert-template.blade.php` in this folder for the preserved rule behavior and template body.
-
-The service check itself reports the current state only. Alert timing remains a LibreNMS responsibility.
-
-## Dynamic device group
-
-The live dynamic device group is:
-
-```text
-Front End ISP Switches
-```
-
-Its preserved rule is based on front-end switch hardware:
-
-```text
-devices.hardware LIKE '%c9500%'
-OR devices.hardware LIKE '%c1300%'
-```
-
-Historical explicit-IP exceptions are intentionally documented only as commented placeholders because management addresses may change.
-
-The alert rule is scoped to this device group. The **alert condition** remains:
-
-```text
-services.service_status != 0
-AND
-macros.device_up = 1
-```
-
-See `device-group.md` for the full preserved group definition.
+for the example LibreNMS configuration.
 
 ## Requirements
 
-The LibreNMS host needs:
-
+- LibreNMS
 - Bash
 - Net-SNMP `snmpget`
 - MariaDB/MySQL CLI client
 - `awk`
 - `grep`
 - `sed`
-- network reachability to the monitored device for SNMPv3
-- network reachability to the LibreNMS database server
-
-## Design rule
-
-Each interface is monitored independently.
-
-One failed interface should affect only its own `ifstatus_single` service. Optical and transceiver data enrich the service output but do not determine whether the interface is OK or CRITICAL.
-
-
-## Rebuild checklist
-
-1. Copy `check_ifstatus_single` to `/usr/lib/nagios/plugins/check_ifstatus_single`.
-2. Apply executable permissions:
-
-```bash
-sudo chmod 755 /usr/lib/nagios/plugins/check_ifstatus_single
-```
-
-3. Configure local SNMPv3 credentials in the deployed copy or use the explicit legacy parameter form.
-4. Confirm the LibreNMS database variables are present in `/opt/librenms/.env`.
-5. Recreate the `Front End ISP Switches` device group from `device-group.md`.
-6. Recreate the alert rule from `alert-rule.md`.
-7. Recreate/import the alert template from `alert-template.blade.php`.
-8. Create one LibreNMS service per monitored interface using the **ifIndex** as the service parameter.
-9. Test the check directly and verify LibreNMS receives the expected service state.
+- SNMPv3 reachability to the monitored device
+- database connectivity from the LibreNMS host
 
 ## Validation
 
-Direct check:
+Run the check directly:
 
 ```bash
 /usr/lib/nagios/plugins/check_ifstatus_single <HOST> <IFINDEX>
 ```
 
-Expected healthy result begins with:
-
-```text
-OK -
-```
-
-A non-up interface should return CRITICAL, and an SNMP/database/mapping failure should return UNKNOWN.
-
-When troubleshooting a service definition, confirm that the configured parameter is the actual SNMP `ifIndex`, not the printed switch-port number.
+A healthy interface should return `OK`. A non-up interface should return `CRITICAL`, and a query or mapping failure should return `UNKNOWN`.
