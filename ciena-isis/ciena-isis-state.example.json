@@ -1,0 +1,10 @@
+{
+  "<device_id>:<adjacency_index>": {
+    "state": "up",
+    "last_change": 1700000000
+  },
+  "<device_id>:<another_adjacency_index>": {
+    "state": "down",
+    "last_change": 1700000300
+  }
+}
