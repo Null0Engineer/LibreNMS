@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Ciena SAOS pseudowire collector every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnCalendar=*:3/5
+Unit=ciena-pseudowire-collector.service
+
+[Install]
+WantedBy=timers.target
