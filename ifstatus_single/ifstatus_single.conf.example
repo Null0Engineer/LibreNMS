@@ -1,0 +1,5 @@
+# Copy to /etc/librenms/ifstatus_single.conf
+# Do not commit real credentials.
+SNMPV3_USER="librenms"
+SNMPV3_AUTH_PASS="CHANGE_ME"
+SNMPV3_PRIV_PASS="CHANGE_ME"
