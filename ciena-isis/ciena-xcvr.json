@@ -1,0 +1,60 @@
+{
+  "vendor": "ciena",
+  "os": "ciena-saos",
+  "module": "ciena-xcvr",
+  "description": "Ciena SAOS transceiver inventory collector using SSH CLI output",
+
+  "transport": {
+    "method": "ssh",
+    "port": 22,
+    "timeout": 30,
+    "username_env": "CIENA_XCVR_SSH_USER",
+    "password_env": "CIENA_XCVR_SSH_PASS"
+  },
+
+  "commands": {
+    "xcvr_list": {
+      "command": "show xcvrs",
+      "description": "Collect list of populated transceivers"
+    },
+    "xcvr_vendor": {
+      "command": "show xcvrs vendor xcvr {{xcvr_id}}",
+      "description": "Collect vendor details for one transceiver"
+    },
+    "xcvr_diagnostics": {
+      "command": "show xcvrs diagnostics",
+      "description": "Collect transceiver diagnostics"
+    }
+  },
+
+  "parsing": {
+    "xcvr_list": {
+      "xcvr_id_regex": "^\\|[ ]+(?<xcvr_id>[0-9]+)[ ]+\\|"
+    },
+    "xcvr_vendor": {
+      "vendor_name_regex": "\\|[ ]+Vendor Name[ ]+\\|[ ]+(?<vendor_name>[^|]+)\\|",
+      "vendor_part_regex": "\\|[ ]+Vendor PN[ ]+\\|[ ]+(?<vendor_part>[^|]+)\\|",
+      "vendor_revision_regex": "\\|[ ]+Vendor Revision[ ]+\\|[ ]+(?<vendor_revision>[^|]+)\\|",
+      "vendor_serial_regex": "\\|[ ]+Vendor Serial Number[ ]+\\|[ ]+(?<vendor_serial>[^|]+)\\|",
+      "vendor_mfg_date_regex": "\\|[ ]+Vendor Mfg Date[ ]+\\|[ ]+(?<vendor_mfg_date>[^|]+)\\|"
+    }
+  },
+
+  "port_mapping": {
+    "method": "ifName",
+    "librenms_table": "ports",
+    "librenms_key": "ifName",
+    "ifName_template": "{{xcvr_id}}"
+  },
+
+  "ignore_values": [
+    "",
+    "N/A",
+    "NA",
+    "UNKNOWN",
+    "Unknown",
+    "null",
+    "None",
+    "-"
+  ]
+}
