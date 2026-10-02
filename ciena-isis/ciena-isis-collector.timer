@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Ciena SAOS ISIS collector every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnCalendar=*:1/5
+Unit=ciena-isis-collector.service
+
+[Install]
+WantedBy=timers.target
