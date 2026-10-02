@@ -1,0 +1,342 @@
+#!/bin/bash
+
+#
+# LibreNMS single-interface service check
+#
+# Supported formats:
+#
+#   New/default credentials:
+#     check_ifstatus_single HOST IFINDEX
+#     check_ifstatus_single -H HOST IFINDEX
+#
+#   Legacy/explicit credentials:
+#     check_ifstatus_single HOST USER AUTH_PASSWORD PRIV_PASSWORD IFINDEX
+#     check_ifstatus_single -H HOST USER AUTH_PASSWORD PRIV_PASSWORD IFINDEX
+#
+
+#
+# Default SNMPv3 credentials
+#
+DEFAULT_USER="librenms"
+DEFAULT_AUTH="CHANGEME"
+DEFAULT_PRIV="CHANGEME"
+
+usage() {
+    echo "Usage:"
+    echo "  $0 [-H] HOST IFINDEX"
+    echo "  $0 [-H] HOST USER AUTH_PASSWORD PRIV_PASSWORD IFINDEX"
+    exit 3
+}
+
+#
+# Extract host while remaining compatible with LibreNMS/Nagios using -H.
+#
+if [ "$1" = "-H" ]; then
+    [ -z "$2" ] && usage
+    HOST="$2"
+    shift 2
+else
+    [ -z "$1" ] && usage
+    HOST="$1"
+    shift
+fi
+
+#
+# New format:
+#   IFINDEX
+#
+# Legacy format:
+#   USER AUTH_PASSWORD PRIV_PASSWORD IFINDEX
+#
+case "$#" in
+    1)
+        USER="$DEFAULT_USER"
+        AUTH="$DEFAULT_AUTH"
+        PRIV="$DEFAULT_PRIV"
+        IDX="$1"
+        ;;
+    4)
+        USER="$1"
+        AUTH="$2"
+        PRIV="$3"
+        IDX="$4"
+        ;;
+    *)
+        echo "UNKNOWN - Expected IFINDEX or USER AUTH_PASSWORD PRIV_PASSWORD IFINDEX"
+        usage
+        ;;
+esac
+
+if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$AUTH" ] ||
+   [ -z "$PRIV" ] || [ -z "$IDX" ]; then
+    echo "UNKNOWN - Missing required arguments"
+    exit 3
+fi
+
+#
+# Interface indexes must be numeric.
+#
+if ! [[ "$IDX" =~ ^[0-9]+$ ]]; then
+    echo "UNKNOWN - Invalid interface index: $IDX"
+    exit 3
+fi
+
+SNMP_ARGS=(
+    -v3
+    -l authPriv
+    -u "$USER"
+    -a SHA
+    -A "$AUTH"
+    -x AES
+    -X "$PRIV"
+    -t 5
+    -r 1
+)
+
+IFNAME=$(snmpget -Ovq \
+    "\${SNMP_ARGS[@]}" \
+    "$HOST" \
+    "1.3.6.1.2.1.31.1.1.1.1.$IDX" 2>/dev/null)
+
+ALIAS=$(snmpget -Ovq \
+    "\${SNMP_ARGS[@]}" \
+    "$HOST" \
+    "1.3.6.1.2.1.31.1.1.1.18.$IDX" 2>/dev/null)
+
+STATUS=$(snmpget -Ovq \
+    "\${SNMP_ARGS[@]}" \
+    "$HOST" \
+    "1.3.6.1.2.1.2.2.1.8.$IDX" 2>/dev/null)
+
+#
+# Handle failed SNMP queries before querying LibreNMS.
+#
+if [ -z "$STATUS" ] ||
+   [[ "$STATUS" == *"No Such"* ]] ||
+   [[ "$STATUS" == *"Timeout"* ]]; then
+    echo "UNKNOWN - Unable to retrieve interface $IDX from $HOST using SNMP"
+    exit 3
+fi
+
+#
+# LibreNMS database connection.
+# Read all DB settings from /opt/librenms/.env so this works cleanly
+# with local or remote MariaDB deployments.
+#
+read_env_value() {
+    local key="$1"
+    local value
+
+    value=$(grep "^$key=" /opt/librenms/.env |
+        head -n 1 |
+        cut -d '=' -f2- |
+        sed 's/^"//;s/"$//')
+
+    printf '%s' "$value"
+}
+
+DB_HOST=$(read_env_value DB_HOST)
+DB_PORT=$(read_env_value DB_PORT)
+DB_NAME=$(read_env_value DB_DATABASE)
+DB_USER=$(read_env_value DB_USERNAME)
+DB_PASS=$(read_env_value DB_PASSWORD)
+
+DB_PORT="\${DB_PORT:-3306}"
+DB_NAME="\${DB_NAME:-librenms}"
+DB_USER="\${DB_USER:-librenms}"
+
+if [ -z "$DB_HOST" ] || [ -z "$DB_PASS" ]; then
+    echo "UNKNOWN - Unable to read LibreNMS database settings from /opt/librenms/.env"
+    exit 3
+fi
+
+run_sql() {
+    mysql \
+        -h "$DB_HOST" \
+        -P "$DB_PORT" \
+        -N -B \
+        -u "$DB_USER" \
+        -p"$DB_PASS" \
+        "$DB_NAME" \
+        -e "$1" 2>/dev/null
+}
+
+watts_to_dbm() {
+    local watts="$1"
+
+    if awk -v value="$watts" \
+        'BEGIN { exit !(value ~ /^[0-9.]+$/ && value > 0) }'
+    then
+        awk -v watts="$watts" \
+            'BEGIN {
+                printf "%.2f", 10 * log(watts * 1000) / log(10)
+            }'
+    else
+        echo "N/A"
+    fi
+}
+
+DEVICE_ID=$(run_sql "
+SELECT device_id
+FROM services
+WHERE service_ip = '$HOST'
+  AND service_type = 'ifstatus_single'
+LIMIT 1;
+")
+
+if [ -z "$DEVICE_ID" ]; then
+    echo "UNKNOWN - Unable to locate LibreNMS device for $HOST"
+    exit 3
+fi
+
+DEVICE_OS=$(run_sql "
+SELECT os
+FROM devices
+WHERE device_id = '$DEVICE_ID'
+LIMIT 1;
+")
+
+PORT_ID=$(run_sql "
+SELECT port_id
+FROM ports
+WHERE device_id = '$DEVICE_ID'
+  AND ifIndex = '$IDX'
+LIMIT 1;
+")
+
+#
+# Optical power
+#
+# Cisco and other platforms commonly use LibreNMS sensor_class=dbm.
+# Ciena SAOS stores transceiver power as watts under sensor_class=power.
+#
+
+if [ "$DEVICE_OS" = "ciena-saos" ]; then
+    RX_WATTS=$(run_sql "
+    SELECT sensor_current
+    FROM sensors
+    WHERE device_id = '$DEVICE_ID'
+      AND sensor_class = 'power'
+      AND sensor_index = 'rx-$IDX'
+    LIMIT 1;
+    ")
+
+    TX_WATTS=$(run_sql "
+    SELECT sensor_current
+    FROM sensors
+    WHERE device_id = '$DEVICE_ID'
+      AND sensor_class = 'power'
+      AND sensor_index = 'tx-$IDX'
+    LIMIT 1;
+    ")
+
+    RX=$(watts_to_dbm "$RX_WATTS")
+    TX=$(watts_to_dbm "$TX_WATTS")
+else
+    RX=$(run_sql "
+    SELECT sensor_current
+    FROM sensors
+    WHERE device_id = '$DEVICE_ID'
+      AND sensor_class = 'dbm'
+      AND sensor_descr LIKE '%$IFNAME%Receive Power%'
+    LIMIT 1;
+    ")
+
+    TX=$(run_sql "
+    SELECT sensor_current
+    FROM sensors
+    WHERE device_id = '$DEVICE_ID'
+      AND sensor_class = 'dbm'
+      AND sensor_descr LIKE '%$IFNAME%Transmit Power%'
+    LIMIT 1;
+    ")
+fi
+
+#
+# Transceiver inventory
+#
+# Cisco inventory is stored in entPhysical.
+# Ciena inventory is stored in the transceivers table and linked by port_id.
+#
+
+if [ "$DEVICE_OS" = "ciena-saos" ]; then
+    TYPE=$(run_sql "
+    SELECT COALESCE(NULLIF(type, ''), NULLIF(model, ''))
+    FROM transceivers
+    WHERE device_id = '$DEVICE_ID'
+      AND port_id = '$PORT_ID'
+    LIMIT 1;
+    ")
+
+    VENDOR=$(run_sql "
+    SELECT vendor
+    FROM transceivers
+    WHERE device_id = '$DEVICE_ID'
+      AND port_id = '$PORT_ID'
+    LIMIT 1;
+    ")
+
+    SERIAL=$(run_sql "
+    SELECT serial
+    FROM transceivers
+    WHERE device_id = '$DEVICE_ID'
+      AND port_id = '$PORT_ID'
+    LIMIT 1;
+    ")
+else
+    TYPE=$(run_sql "
+    SELECT entPhysicalModelName
+    FROM entPhysical
+    WHERE device_id = '$DEVICE_ID'
+      AND entPhysicalName = '$IFNAME'
+    LIMIT 1;
+    ")
+
+    VENDOR=$(run_sql "
+    SELECT entPhysicalMfgName
+    FROM entPhysical
+    WHERE device_id = '$DEVICE_ID'
+      AND entPhysicalName = '$IFNAME'
+    LIMIT 1;
+    ")
+
+    SERIAL=$(run_sql "
+    SELECT entPhysicalSerialNum
+    FROM entPhysical
+    WHERE device_id = '$DEVICE_ID'
+      AND entPhysicalName = '$IFNAME'
+    LIMIT 1;
+    ")
+fi
+
+NOTES=$(run_sql "
+SELECT attrib_value
+FROM devices_attribs
+WHERE device_id = '$DEVICE_ID'
+  AND attrib_type = 'port_id_notes:$PORT_ID'
+LIMIT 1;
+")
+
+NOTES=$(printf '%s' "$NOTES" |
+    sed 's/\\n/ /g' |
+    tr '\r\n' ' ' |
+    sed 's/[[:space:]][[:space:]]*/ /g;s/^ //;s/ $//')
+
+[ -z "$IFNAME" ] && IFNAME="Unknown Port"
+[ -z "$ALIAS" ] && ALIAS="No Description"
+[ -z "$RX" ] && RX="N/A"
+[ -z "$TX" ] && TX="N/A"
+[ -z "$TYPE" ] && TYPE="Unknown"
+[ -z "$VENDOR" ] && VENDOR="Unknown"
+[ -z "$SERIAL" ] && SERIAL="Unknown"
+[ -z "$NOTES" ] && NOTES="None"
+
+OUTPUT="$IFNAME DOWN RX:$RX TX:$TX DESC:$ALIAS TYPE:$TYPE VENDOR:$VENDOR SERIAL:$SERIAL NOTES:$NOTES"
+
+if [ "$STATUS" = "up" ]; then
+    echo "OK - $IFNAME RX:$RX TX:$TX DESC:$ALIAS TYPE:$TYPE VENDOR:$VENDOR SERIAL:$SERIAL NOTES:$NOTES"
+    exit 0
+fi
+
+echo "CRITICAL - $OUTPUT"
+exit 2
