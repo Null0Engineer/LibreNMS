@@ -1,0 +1,11 @@
+[Unit]
+Description=Ciena SAOS ISIS collector for LibreNMS
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=librenms
+Group=librenms
+WorkingDirectory=/opt/librenms
+ExecStart=/usr/bin/php /opt/librenms/ciena-isis-run-all.php
