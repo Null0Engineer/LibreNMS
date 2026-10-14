@@ -75,11 +75,13 @@ A pseudowire is skipped if the required L2VPN, forwarding-domain, logical-port, 
 
 Ciena pseudowire peers may use an LSR ID that does not match a normal LibreNMS interface address.
 
-The collector stores local LSR IDs in:
+The collector stores local LSR IDs in the separate helper database on the same MariaDB instance as LibreNMS:
 
 ```text
-ciena_lsr_ids
+librenms_custom.ciena_lsr_ids
 ```
+
+Its existing LibreNMS database connection is reused, without changing the primary database configuration.
 
 The table maps:
 
@@ -100,7 +102,7 @@ devices -> ports -> ipv4_addresses
 If that does not match, it checks:
 
 ```text
-ciena_lsr_ids.lsr_id
+librenms_custom.ciena_lsr_ids.lsr_id
 ```
 
 If neither method finds the peer, `peer_device_id` is stored as `0`.
@@ -196,21 +198,21 @@ A typical setup is:
 - working `ciena-xcvr.json`
 - local `ciena-xcvr.env`
 - MariaDB access through LibreNMS
-- `ciena_lsr_ids` helper table
+- `librenms_custom.ciena_lsr_ids` helper table, with the appropriate application-account grants
 - SSH reachability to the Ciena devices
 
 ## Custom database table
 
-The pseudowire collector requires one helper table:
+The pseudowire collector requires one helper table in a separate database, so LibreNMS's schema validator does not flag the custom table:
 
 ```text
-ciena_lsr_ids
+librenms_custom.ciena_lsr_ids
 ```
 
-Schema:
+Schema (see `ciena_lsr_ids.sql` for the database creation statement):
 
 ```sql
-CREATE TABLE `ciena_lsr_ids` (
+CREATE TABLE `librenms_custom`.`ciena_lsr_ids` (
   `device_id` int(10) unsigned NOT NULL,
   `lsr_id` varchar(46) NOT NULL,
   `hostname` varchar(255) DEFAULT NULL,
@@ -222,6 +224,29 @@ CREATE TABLE `ciena_lsr_ids` (
 ```
 
 The LibreNMS `pseudowires` table itself is native to LibreNMS and should not be recreated from this project.
+
+### Database permissions
+
+Give the application's existing MariaDB account only the permissions it needs on the helper table. Example (replace the host with the actual MariaDB account host pattern):
+
+```sql
+GRANT SELECT, INSERT, UPDATE
+ON `librenms_custom`.`ciena_lsr_ids`
+TO 'librenms'@'<app-server-host>';
+```
+
+No changes to the normal `DB_DATABASE=librenms` connection are required.
+
+### Migrating a legacy table
+
+1. Back up `librenms.ciena_lsr_ids` and confirm that the dump is usable.
+2. Create the new database and table. Alternatively, copy the existing schema: `CREATE TABLE librenms_custom.ciena_lsr_ids LIKE librenms.ciena_lsr_ids;`.
+3. Pause collector scheduling for the cutover and copy data: `INSERT INTO librenms_custom.ciena_lsr_ids SELECT * FROM librenms.ciena_lsr_ids;`.
+4. Compare records (not just counts), grant the application account access, and deploy the collector with the new table references.
+5. Test collection and peer resolution while preventing overlapping scheduled runs.
+6. Preserve a rollback copy until confident that the collector has been working reliably. Only then retire the original `librenms.ciena_lsr_ids` table and rerun LibreNMS schema validation.
+
+For an operational dry-run, rename the legacy table into the custom database rather than dropping it. This takes it out of LibreNMS's validated schema while retaining a reversible copy.
 
 ## Validation
 
@@ -241,7 +266,7 @@ DONE <device>: inserted=<n>, updated=<n>, skipped=<n>, seen=<n>
 
 Use the queries in `validation.md` to verify:
 
-- `ciena_lsr_ids`
+- `librenms_custom.ciena_lsr_ids`
 - LibreNMS `pseudowires`
 
 ## Devices without pseudowires
