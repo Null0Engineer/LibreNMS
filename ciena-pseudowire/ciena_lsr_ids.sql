@@ -1,4 +1,8 @@
-CREATE TABLE `ciena_lsr_ids` (
+-- Create the helper table outside the native LibreNMS database.
+CREATE DATABASE IF NOT EXISTS `librenms_custom`
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE `librenms_custom`.`ciena_lsr_ids` (
   `device_id` int(10) unsigned NOT NULL,
   `lsr_id` varchar(46) NOT NULL,
   `hostname` varchar(255) DEFAULT NULL,
