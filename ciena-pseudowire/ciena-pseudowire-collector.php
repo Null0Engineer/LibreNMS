@@ -235,7 +235,7 @@ $local_lsr_id = parse_lsr_id($output);
 
 if ($local_lsr_id) {
     \Illuminate\Support\Facades\DB::statement(
-        'INSERT INTO ciena_lsr_ids (device_id, hostname, sysName, lsr_id)
+        'INSERT INTO librenms_custom.ciena_lsr_ids (device_id, hostname, sysName, lsr_id)
          VALUES (?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
              hostname = VALUES(hostname),
@@ -317,7 +317,7 @@ foreach ($pseudowires as $pw) {
 
     if (!$peer_device_id) {
         $peer_device_id = dbFetchCell(
-            'SELECT device_id FROM ciena_lsr_ids WHERE lsr_id = ? LIMIT 1',
+            'SELECT device_id FROM librenms_custom.ciena_lsr_ids WHERE lsr_id = ? LIMIT 1',
             [$pw['peer_ip']]
         );
     }
