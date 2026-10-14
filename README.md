@@ -53,7 +53,7 @@ The collector resolves:
 - peer LibreNMS devices
 - Ciena LSR IDs
 
-A small helper table, `ciena_lsr_ids`, is used when a pseudowire peer is identified by an LSR ID instead of a normal interface address.
+A small helper table, `librenms_custom.ciena_lsr_ids`, in a separate database on the same MariaDB server is used when a pseudowire peer is identified by an LSR ID instead of a normal interface address.
 
 ## Repository Layout
 
